@@ -13,6 +13,7 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 using Windows.System.Threading;
+using System.Diagnostics;
 
 // https://go.microsoft.com/fwlink/?LinkId=402352&clcid=0x804 上介绍了“空白页”项模板
 
@@ -21,28 +22,27 @@ namespace XTimer
     // A convenient timer class
     public class XCoreTimer
     {
-        private int _total_seconds;
-        private int seconds_left;
+        public int Total_seconds { get; set; }
+        public int Seconds_left { get; set; }
+
         private double _update_seconds;
-        
         private ThreadPoolTimer core_timer;
 
         // UI-related
-        private TextBlock _timer_minutes;
-        private TextBlock _timer_seconds;
-        private Windows.UI.Core.CoreDispatcher _core_dispatcher;
+        private List<object> txt_minutes_to_update;
+        private List<object> txt_seconds_to_update;
+        public Windows.UI.Core.CoreDispatcher Core_dispatcher { get; set; }
 
         public XCoreTimer(
-            int total_seconds, TextBlock timer_minutes, TextBlock timer_seconds,
-            Windows.UI.Core.CoreDispatcher core_dispatcher,
+            int total_seconds, Windows.UI.Core.CoreDispatcher core_dispatcher,
             double update_period_in_seconds=1.0)
         {
-            seconds_left = _total_seconds = total_seconds;
+            Seconds_left = Total_seconds = total_seconds;
             _update_seconds = update_period_in_seconds;
 
-            _timer_minutes = timer_minutes;
-            _timer_seconds = timer_seconds;
-            _core_dispatcher = core_dispatcher;
+            Core_dispatcher = core_dispatcher;
+            txt_minutes_to_update = new List<object>();
+            txt_seconds_to_update = new List<object>();
         }
 
         public async void Run()
@@ -50,21 +50,95 @@ namespace XTimer
             core_timer = ThreadPoolTimer.CreatePeriodicTimer(
                 (source) => 
                 {
-                    seconds_left -= 1;
+                    Seconds_left -= 1;
 
-                    _core_dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.High,
+                    Core_dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.High,
                         () =>
                         {
-                            _timer_minutes.Text = (seconds_left / 60).ToString("D2");
-                            _timer_seconds.Text = (seconds_left % 60).ToString("D2");
+                            int seconds = Seconds_left % 60;
+
+                            // update second textblocks
+                            foreach (object txt_seconds in txt_seconds_to_update)
+                            {
+                                if (txt_seconds.GetType() == typeof(TextBlock))
+                                {
+                                    TextBlock txt = (TextBlock)txt_seconds;
+                                    txt.Text = seconds.ToString("D2");
+                                }
+                                else if (txt_seconds.GetType() == typeof(TextBox))
+                                {
+                                    TextBox txt = (TextBox)txt_seconds;
+                                    txt.Text = seconds.ToString("D2");
+                                }
+                                else
+                                {
+                                    Debug.WriteLine("Unknown type in txt_seconds_to_update");
+                                }
+                            }
+
+                            // update minute textblocks
+                            if (seconds == 59)
+                            {
+                                int minutes = Seconds_left / 60;
+                                foreach (object txt_minutes in txt_minutes_to_update)
+                                {
+                                    if (txt_minutes.GetType() == typeof(TextBlock))
+                                    {
+                                        TextBlock txt = (TextBlock)txt_minutes;
+                                        txt.Text = minutes.ToString("D2");
+                                    }
+                                    else if (txt_minutes.GetType() == typeof(TextBox))
+                                    {
+                                        TextBox txt = (TextBox)txt_minutes;
+                                        txt.Text = minutes.ToString("D2");
+                                    }
+                                    else
+                                    {
+                                        Debug.WriteLine("Unknown type in txt_minutes_to_update");
+                                    }
+                                }
+                            }
+                            
                         });
 
-                    if (seconds_left == 0)
+                    if (Seconds_left == 0)
                     {
                         source.Cancel();
                     }
                 }, 
                 TimeSpan.FromSeconds(_update_seconds));
+        }
+
+        public void BindTimer(
+            object timer_minutes, object timer_seconds, 
+            Button cancel_button=null)
+        {
+            if (!txt_minutes_to_update.Contains(timer_minutes))
+            {
+                txt_minutes_to_update.Add(timer_minutes);
+            }
+
+            if (!txt_seconds_to_update.Contains(timer_seconds))
+            {
+                txt_seconds_to_update.Add(timer_seconds);
+            }
+
+            if (cancel_button != null)
+            {
+                cancel_button.Click += Button_Cancel;
+            }
+        }
+
+        public void UnbindTimer(
+            object timer_minutes, object timer_seconds, 
+            Button cancel_button=null)
+        {
+            txt_minutes_to_update.Remove(timer_minutes);
+            txt_seconds_to_update.Remove(timer_seconds);
+            if (cancel_button != null)
+            {
+                cancel_button.Click -= Button_Cancel;
+            }
         }
 
         public void Cancel()
@@ -83,16 +157,11 @@ namespace XTimer
     /// </summary>
     public sealed partial class MainPage : Page
     {
-        private TimeSpan tick_period;
-        private ThreadPoolTimer timer;
-        private int timer_seconds;
+        public XCoreTimer CurrentTimer { get; set; }
 
         public MainPage()
         {
             this.InitializeComponent();
-
-            tick_period = TimeSpan.FromSeconds(1.0);
-            timer = null;
 
             RelativePanel tomato = new RelativePanel();
             tomato.Width = SplitView_TimerList.OpenPaneLength - 30;
@@ -132,31 +201,10 @@ namespace XTimer
 
         private async void Button_TimerStart_Click(object sender, RoutedEventArgs e)
         {
-            timer_seconds = int.Parse(TextBox_TimerMinutes.Text) * 60 +
+            int timer_seconds = int.Parse(TextBox_TimerMinutes.Text) * 60 +
                             int.Parse(TextBox_TimerSeconds.Text);
 
-            if (timer != null)
-            {
-                timer.Cancel();
-            }
-            
-            timer = ThreadPoolTimer.CreatePeriodicTimer((source) =>
-            {
-                timer_seconds -= 1;
-                
-                Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.High,
-                    () =>
-                    {
-                        TextBox_TimerMinutes.Text = (timer_seconds / 60).ToString("D2");
-                        TextBox_TimerSeconds.Text = (timer_seconds % 60).ToString("D2");
-                    });
-
-                if (timer_seconds == 0)
-                {
-                    source.Cancel();
-                }
-            }, tick_period);
-
+            // Create a new timer UI at the timer's list
             RelativePanel new_timer_panel = new RelativePanel();
             new_timer_panel.Width = SplitView_TimerList.OpenPaneLength - 20;
 
@@ -191,18 +239,38 @@ namespace XTimer
             new_timer_panel.Children.Add(txt_minutes);
             new_timer_panel.Children.Add(txt_seconds);
 
-            XCoreTimer core_timer = new XCoreTimer(
-                timer_seconds, txt_minutes, txt_seconds, Dispatcher);
+            // Bind a new core timer object to the UI
+            XCoreTimer core_timer = new XCoreTimer(timer_seconds, Dispatcher);
+            core_timer.BindTimer(txt_minutes, txt_seconds, btn_cancel);
+            if (CurrentTimer != null)
+            {
+                CurrentTimer.UnbindTimer(
+                    TextBox_TimerMinutes, TextBox_TimerSeconds, Button_TimerCancel);
+            }
+            CurrentTimer = core_timer;
+            core_timer.BindTimer(
+                TextBox_TimerMinutes, TextBox_TimerSeconds, Button_TimerCancel);
             core_timer.Run();
 
-            btn_cancel.Click += core_timer.Button_Cancel;
-
+            // Add the new timer to the list view
             ListView_Timers.Items.Add(new_timer_panel);
+
         }
 
         private void Button_TimerCancel_Click(object sender, RoutedEventArgs e)
         {
-            timer.Cancel();
+            
+        }
+
+        private void Button_NewTimer_Click(object sender, RoutedEventArgs e)
+        {
+            if (CurrentTimer != null)
+            {
+                CurrentTimer.UnbindTimer(
+                    TextBox_TimerMinutes, TextBox_TimerSeconds, Button_TimerCancel);
+                CurrentTimer = null;
+            }
+
         }
     }
 }
